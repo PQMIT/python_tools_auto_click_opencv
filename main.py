@@ -17,9 +17,10 @@ CLICK_TARGETS = [
 ]
 TARGET_REGION_RADIUS = 30
 MIN_ORANGE_PIXELS_IN_REGION = 50
+MAX_CENTROID_DISTANCE = 20  # centroid phải cách target tối đa 20px
 
-LOWER_ORANGE = np.array([2, 90, 140])
-UPPER_ORANGE = np.array([8, 255, 255])
+LOWER_ORANGE = np.array([5, 63, 153])
+UPPER_ORANGE = np.array([14, 255, 255])
 MORPH_KERNEL = np.ones((3, 3), np.uint8)
 
 # thực hiện click
@@ -58,10 +59,24 @@ def find_save_button(frame, target_x, target_y):
     region_mask = mask[y1:y2, x1:x2]
     orange_pixels = int(np.count_nonzero(region_mask))
 
-    if orange_pixels >= MIN_ORANGE_PIXELS_IN_REGION:
-        return (target_x, target_y), orange_pixels
+    cy_idx = min(target_y, height - 1)
+    cx_idx = min(target_x, width - 1)
+    actual_hsv = hsv[cy_idx, cx_idx].tolist()
+
+    if orange_pixels < MIN_ORANGE_PIXELS_IN_REGION:
+        return None, orange_pixels, actual_hsv
+
+    # tính centroid của các pixel cam trong vùng
+    ys, xs = np.where(region_mask > 0)
+    centroid_x = int(xs.mean()) + x1
+    centroid_y = int(ys.mean()) + y1
+    dist = np.hypot(centroid_x - target_x, centroid_y - target_y)
+
+    if dist <= MAX_CENTROID_DISTANCE:
+        return (target_x, target_y), orange_pixels, actual_hsv
     else:
-        return None, orange_pixels
+        print(f"  Reject ({target_x},{target_y}): centroid cam tai ({centroid_x},{centroid_y}), cach target {dist:.1f}px > {MAX_CENTROID_DISTANCE}px")
+        return None, orange_pixels, actual_hsv
 
 
 def main():
@@ -77,21 +92,28 @@ def main():
         frame_count += 1
 
         found_center = None
+        found_pixels = 0
+        found_hsv = None
         for tx, ty in CLICK_TARGETS:
-            center, orange_pixels = find_save_button(frame, tx, ty)
+            center, orange_pixels, actual_hsv = find_save_button(frame, tx, ty)
             if frame_count % 30 == 0:
-                print(f"Target ({tx},{ty}) - Orange pixels: {orange_pixels}")
+                print(f"Target ({tx},{ty}) - Orange pixels: {orange_pixels} | Actual HSV at center: {actual_hsv}")
             if center is not None:
                 found_center = center
+                found_pixels = orange_pixels
+                found_hsv = actual_hsv
                 break
 
         if found_center is not None:
             cx, cy = found_center
             now = time.time()
             if now - last_click_at >= CLICK_COOLDOWN_SEC:
-                print(f"Click nut Luu tai: {cx}, {cy}")
+                print(f"Click nut Luu tai: ({cx}, {cy}) | Orange pixels: {found_pixels} | Actual HSV at center: {found_hsv}")
                 adb_tap(cx, cy)
                 last_click_at = now
+                delay = CLICK_COOLDOWN_SEC
+                print(f"Da click, cho {delay} giay truoc khi tiep tuc...")
+                time.sleep(delay)
 
                 # if SAVE_DEBUG_IMAGE:
                 #     overlay = frame.copy()
