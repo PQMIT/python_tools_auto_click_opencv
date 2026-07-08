@@ -11,8 +11,9 @@ SAVE_DEBUG_IMAGE = True
 DEBUG_IMAGE_PATH = "last_click.png"
 
 CLICK_TARGETS = [
-    (915, 720),
-    (915, 600),
+    (915, 730),
+    (915, 635),
+    (915, 510),
     (915, 460),
 ]
 TARGET_REGION_RADIUS = 30
@@ -115,11 +116,11 @@ def main():
                 print(f"Da click, cho {delay} giay truoc khi tiep tuc...")
                 time.sleep(delay)
 
-                # if SAVE_DEBUG_IMAGE:
-                #     overlay = frame.copy()
-                #     cv2.circle(overlay, (cx, cy), 18, (0, 255, 255), 3)
-                #     cv2.imwrite(DEBUG_IMAGE_PATH, overlay)
-                #     print(f"Da luu anh kiem tra tai: {DEBUG_IMAGE_PATH}")
+                if SAVE_DEBUG_IMAGE:
+                    overlay = frame.copy()
+                    cv2.circle(overlay, (cx, cy), 18, (0, 255, 255), 3)
+                    cv2.imwrite(DEBUG_IMAGE_PATH, overlay)
+                    print(f"Da luu anh kiem tra tai: {DEBUG_IMAGE_PATH}")
 
         time.sleep(CAPTURE_DELAY_SEC)
 
