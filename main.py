@@ -11,10 +11,12 @@ SAVE_DEBUG_IMAGE = True
 DEBUG_IMAGE_PATH = "last_click.png"
 
 CLICK_TARGETS = [
-    (915, 730),
-    (915, 635),
-    (915, 510),
     (915, 460),
+    (915, 510),
+    (915, 610),
+    (915, 635),
+    (915, 735),
+    (915, 860),
 ]
 TARGET_REGION_RADIUS = 30
 MIN_ORANGE_PIXELS_IN_REGION = 50
@@ -76,7 +78,7 @@ def find_save_button(frame, target_x, target_y):
     if dist <= MAX_CENTROID_DISTANCE:
         return (target_x, target_y), orange_pixels, actual_hsv
     else:
-        print(f"  Reject ({target_x},{target_y}): centroid cam tai ({centroid_x},{centroid_y}), cach target {dist:.1f}px > {MAX_CENTROID_DISTANCE}px")
+        print(f"  Reject ({target_x},{target_y}): centroid cam tại ({centroid_x},{centroid_y}), cách target {dist:.1f}px > {MAX_CENTROID_DISTANCE}px")
         return None, orange_pixels, actual_hsv
 
 
@@ -84,21 +86,24 @@ def main():
     last_click_at = 0.0
     frame_count = 0
 
+    print(f"[START] Auto-click đang chạy | Targets: {CLICK_TARGETS} | Delay: {CAPTURE_DELAY_SEC}s")
+
     while True:
         frame = capture_screen()
         if frame is None:
+            print("[WARN] Không chụp được màn hình (ADB lỗi?), thử lại sau...")
             time.sleep(CAPTURE_DELAY_SEC)
             continue
 
         frame_count += 1
+        print(f"[Frame {frame_count}] Đang quét {len(CLICK_TARGETS)} vị trí...")
 
         found_center = None
         found_pixels = 0
         found_hsv = None
         for tx, ty in CLICK_TARGETS:
             center, orange_pixels, actual_hsv = find_save_button(frame, tx, ty)
-            if frame_count % 30 == 0:
-                print(f"Target ({tx},{ty}) - Orange pixels: {orange_pixels} | Actual HSV at center: {actual_hsv}")
+            print(f"  ({tx},{ty})| Orange pixels: {orange_pixels}| HSV: {actual_hsv}")
             if center is not None:
                 found_center = center
                 found_pixels = orange_pixels
@@ -109,18 +114,18 @@ def main():
             cx, cy = found_center
             now = time.time()
             if now - last_click_at >= CLICK_COOLDOWN_SEC:
-                print(f"Click nut Luu tai: ({cx}, {cy}) | Orange pixels: {found_pixels} | Actual HSV at center: {found_hsv}")
+                print(f"Click nút Lưu tại: ({cx}, {cy}) | Orange pixels: {found_pixels} | HSV: {found_hsv}")
                 adb_tap(cx, cy)
                 last_click_at = now
                 delay = CLICK_COOLDOWN_SEC
-                print(f"Da click, cho {delay} giay truoc khi tiep tuc...")
+                print(f"Đã click, chờ {delay} giây trước khi tiếp tục...")
                 time.sleep(delay)
 
                 if SAVE_DEBUG_IMAGE:
                     overlay = frame.copy()
                     cv2.circle(overlay, (cx, cy), 18, (0, 255, 255), 3)
                     cv2.imwrite(DEBUG_IMAGE_PATH, overlay)
-                    print(f"Da luu anh kiem tra tai: {DEBUG_IMAGE_PATH}")
+                    print(f"Đã lưu ảnh kiểm tra tại: {DEBUG_IMAGE_PATH}")
 
         time.sleep(CAPTURE_DELAY_SEC)
 
