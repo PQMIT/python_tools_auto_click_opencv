@@ -1,22 +1,28 @@
+import random
 import subprocess
 import time
 
 import cv2
 import numpy as np
 
+from dump_ui_xml import dump_ui_xml, find_node_by_resource_id
 
 CAPTURE_DELAY_SEC = 5
 CLICK_COOLDOWN_SEC = 5
+CLICK_DELAY_MIN_SEC = 4.0  # chờ tối thiểu sau khi click, tránh bị phát hiện là bot
+CLICK_DELAY_MAX_SEC = 9.0  # chờ tối đa sau khi click
 SAVE_DEBUG_IMAGE = True
 DEBUG_IMAGE_PATH = "last_click.png"
 
+TARGET_RESOURCE_ID = "com.shopee.vn.dfpluginshopee7:id/tv_state_btn"
+
 CLICK_TARGETS = [
-    (915, 460),
-    (915, 510),
-    (915, 610),
-    (915, 635),
-    (915, 735),
-    (915, 860),
+    # (915, 460),
+    # (915, 510),
+    # (915, 610),
+    # (915, 635),
+    # (915, 735),
+    # (915, 860),
 ]
 TARGET_REGION_RADIUS = 30
 MIN_ORANGE_PIXELS_IN_REGION = 50
@@ -82,6 +88,14 @@ def find_save_button(frame, target_x, target_y):
         return None, orange_pixels, actual_hsv
 
 
+# lấy toạ độ nút từ XML dump (uiautomator) theo resource-id
+def get_xml_target():
+    xml_path = dump_ui_xml()
+    if xml_path is None:
+        return None
+    return find_node_by_resource_id(xml_path, TARGET_RESOURCE_ID)
+
+
 def main():
     last_click_at = 0.0
     frame_count = 0
@@ -89,48 +103,40 @@ def main():
     print(f"[START] Auto-click đang chạy | Targets: {CLICK_TARGETS} | Delay: {CAPTURE_DELAY_SEC}s")
 
     while True:
-        frame = capture_screen()
-        if frame is None:
-            print("[WARN] Không chụp được màn hình (ADB lỗi?), thử lại sau...")
-            time.sleep(CAPTURE_DELAY_SEC)
-            continue
+        candidates = []
+        xml_target = get_xml_target()
+        if xml_target is not None:
+            candidates.append(xml_target)
+        candidates.extend(CLICK_TARGETS)
 
         frame_count += 1
-        # print(f"[Frame {frame_count}] Đang quét {len(CLICK_TARGETS)} vị trí...")
-        print(f".")
+        print(f"[Frame {frame_count}] Đang quét {len(candidates)} vị trí...")
 
-        found_center = None
-        found_pixels = 0
-        found_hsv = None
-        for tx, ty in CLICK_TARGETS:
-            center, orange_pixels, actual_hsv = find_save_button(frame, tx, ty)
-            if orange_pixels > 0:
-                print(f"  ({tx},{ty})| Orange pixels: {orange_pixels}| HSV: {actual_hsv}")
-            if center is not None:
-                found_center = center
-                found_pixels = orange_pixels
-                found_hsv = actual_hsv
-                break
+        # thực hiện click vào nút Lưu đã tìm thấy theo khoảng thời gian không cố định tránh bị phát hiện
+        # sau khi thực hiện click xong thì lưu lại ảnh màn hình để kiểm tra
+        found_center = candidates[0] if candidates else None
 
         if found_center is not None:
             cx, cy = found_center
             now = time.time()
             if now - last_click_at >= CLICK_COOLDOWN_SEC:
-                print(f"Click nút Lưu tại: ({cx}, {cy}) | Orange pixels: {found_pixels} | HSV: {found_hsv}")
+                print(f"Click nút Lưu tại: ({cx}, {cy})")
                 adb_tap(cx, cy)
                 last_click_at = now
-                delay = CLICK_COOLDOWN_SEC
-                print(f"Đã click, chờ {delay} giây trước khi tiếp tục...")
+
+                delay = random.uniform(CLICK_DELAY_MIN_SEC, CLICK_DELAY_MAX_SEC)
+                print(f"Đã click, chờ {delay:.1f} giây trước khi tiếp tục...")
                 time.sleep(delay)
 
                 if SAVE_DEBUG_IMAGE:
-                    overlay = frame.copy()
-                    cv2.circle(overlay, (cx, cy), 18, (0, 255, 255), 3)
-                    cv2.imwrite(DEBUG_IMAGE_PATH, overlay)
-                    print(f"Đã lưu ảnh kiểm tra tại: {DEBUG_IMAGE_PATH}")
+                    frame = capture_screen()
+                    if frame is not None:
+                        overlay = frame.copy()
+                        cv2.circle(overlay, (cx, cy), 18, (0, 255, 255), 3)
+                        cv2.imwrite(DEBUG_IMAGE_PATH, overlay)
+                        print(f"Đã lưu ảnh kiểm tra tại: {DEBUG_IMAGE_PATH}")
 
         time.sleep(CAPTURE_DELAY_SEC)
-
 
 if __name__ == "__main__":
     main()
