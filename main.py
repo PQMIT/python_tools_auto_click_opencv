@@ -11,12 +11,12 @@ SAVE_DEBUG_IMAGE = True
 DEBUG_IMAGE_PATH = "last_click.png"
 
 CLICK_TARGETS = [
-    (915, 460),
-    (915, 510),
+    # (915, 460),
+    # (915, 510),
     (915, 610),
     (915, 635),
-    (915, 735),
-    (915, 860),
+    # (915, 735),
+    # (915, 860),
 ]
 TARGET_REGION_RADIUS = 30
 MIN_ORANGE_PIXELS_IN_REGION = 50

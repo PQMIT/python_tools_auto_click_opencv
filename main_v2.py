@@ -4,11 +4,13 @@ import time
 
 import cv2
 import numpy as np
+from pathlib import Path
 
-from dump_ui_xml import dump_ui_xml, find_node_by_resource_id
+from dump_ui_xml import dump_ui_xml, find_node_by_resource_id, parse_bounds
+import xml.etree.ElementTree as ET
 
-CAPTURE_DELAY_SEC = 5
-CLICK_COOLDOWN_SEC = 5
+CAPTURE_DELAY_SEC = 15
+CLICK_COOLDOWN_SEC = 15
 CLICK_DELAY_MIN_SEC = 4.0  # chờ tối thiểu sau khi click, tránh bị phát hiện là bot
 CLICK_DELAY_MAX_SEC = 9.0  # chờ tối đa sau khi click
 SAVE_DEBUG_IMAGE = True
@@ -95,6 +97,52 @@ def get_xml_target():
         return None
     return find_node_by_resource_id(xml_path, TARGET_RESOURCE_ID)
 
+def get_xml_target_2():
+    # Run test_appium.py to generate ui.xml, then parse it.
+    ui_path = Path("ui.xml")
+
+    try:
+        print("Running test_appium.py to generate ui.xml...")
+        proc = subprocess.run(
+            ["py", "test_appium.py"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            print("test_appium.py exited with code", proc.returncode)
+            print(proc.stdout)
+            print(proc.stderr)
+        else:
+            # print minimal output from test_appium.py for visibility
+            out = (proc.stdout or "").strip()
+            if out:
+                print(out.splitlines()[-5:])
+    except Exception as e:
+        print("Không thể chạy test_appium.py:", e)
+
+    # If ui.xml exists now, parse it and return center coords
+    if ui_path.exists():
+        try:
+            tree = ET.parse(str(ui_path))
+            root = tree.getroot()
+            for elem in root.iter():
+                rid = elem.get('resource-id')
+                if rid == TARGET_RESOURCE_ID:
+                    bounds = parse_bounds(elem.get('bounds', ''))
+                    if bounds:
+                        _, _, _, _, cx, cy = bounds
+                        return cx, cy
+        except Exception as e:
+            print("Lỗi khi phân tích ui.xml:", e)
+
+    # Fallback to performing an ADB dump if ui.xml not present or parse failed
+    xml_path = dump_ui_xml()
+    if xml_path is None:
+        return None
+    return find_node_by_resource_id(xml_path, TARGET_RESOURCE_ID)
 
 def main():
     last_click_at = 0.0
@@ -103,18 +151,41 @@ def main():
     print(f"[START] Auto-click đang chạy | Targets: {CLICK_TARGETS} | Delay: {CAPTURE_DELAY_SEC}s")
 
     while True:
+        frame = capture_screen()
+        if frame is None:
+            print("[WARN] Không chụp được màn hình (ADB lỗi?), thử lại sau...")
+            time.sleep(CAPTURE_DELAY_SEC)
+            continue
+
         candidates = []
-        xml_target = get_xml_target()
+        # xml_target = get_xml_target()
+        xml_target = get_xml_target_2()
+        print(f"xml_target: {xml_target}")
+
         if xml_target is not None:
             candidates.append(xml_target)
         candidates.extend(CLICK_TARGETS)
 
         frame_count += 1
-        print(f"[Frame {frame_count}] Đang quét {len(candidates)} vị trí...")
+        # print(f"[Frame {frame_count}] Đang quét {len(candidates)} vị trí...")
+        print(f".")
 
         # thực hiện click vào nút Lưu đã tìm thấy theo khoảng thời gian không cố định tránh bị phát hiện
         # sau khi thực hiện click xong thì lưu lại ảnh màn hình để kiểm tra
-        found_center = candidates[0] if candidates else None
+        # found_center = candidates[0] if candidates else None
+
+        found_center = None
+        found_pixels = 0
+        found_hsv = None
+        if candidates:
+            tx, ty = candidates[0]
+            center, orange_pixels, actual_hsv = find_save_button(frame, tx, ty)
+            if orange_pixels > 0:
+                print(f"  ({tx},{ty})| Orange pixels: {orange_pixels}| HSV: {actual_hsv}")
+            if center is not None:
+                found_center = center
+                found_pixels = orange_pixels
+                found_hsv = actual_hsv
 
         if found_center is not None:
             cx, cy = found_center
