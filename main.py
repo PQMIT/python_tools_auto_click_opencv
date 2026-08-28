@@ -8,7 +8,8 @@ import numpy as np
 CAPTURE_DELAY_SEC = 5
 CLICK_COOLDOWN_SEC = 5
 SAVE_DEBUG_IMAGE = True
-DEBUG_IMAGE_PATH = "last_click.png"
+DEBUG_IMAGE_PATH = "last_click.png"      # ảnh có vẽ chú thích, để xem bằng mắt
+RAW_IMAGE_PATH = "last_capture_raw.png"  # ảnh gốc chưa vẽ gì, để dò lại ngưỡng màu
 
 CLICK_TARGETS = [
     (915, 460),
@@ -18,17 +19,32 @@ CLICK_TARGETS = [
     (915, 735),
     (915, 860),
 ]
-TARGET_REGION_RADIUS = 5
-MIN_ORANGE_PIXELS_IN_REGION = 50
-MAX_CENTROID_DISTANCE = 5  # centroid phải cách target tối đa 20px
 
-LOWER_ORANGE = np.array([5, 63, 153])
+# Vùng kiểm tra là HÌNH TRÒN bán kính 5px, tâm đúng tại điểm click.
+TARGET_REGION_RADIUS = 5
+# Tỉ lệ pixel cam tối thiểu trong hình tròn thì mới coi là nút Lưu.
+MIN_ORANGE_RATIO = 0.6
+
+# Nút Lưu là màu cam RỰC (H=5, S~229, V~225). Nền gradient cam nhạt phía sau
+# popup có cùng hue nhưng tối/nhạt hơn hẳn (S<=189, V<=182) -> dùng S/V để loại.
+LOWER_ORANGE = np.array([3, 195, 200])
 UPPER_ORANGE = np.array([14, 255, 255])
 MORPH_KERNEL = np.ones((3, 3), np.uint8)
+
+# Mặt nạ hình tròn (11x11 cho r=5), dùng lại cho mọi target.
+_yy, _xx = np.mgrid[
+    -TARGET_REGION_RADIUS : TARGET_REGION_RADIUS + 1,
+    -TARGET_REGION_RADIUS : TARGET_REGION_RADIUS + 1,
+]
+CIRCLE_MASK = (_xx**2 + _yy**2) <= TARGET_REGION_RADIUS**2
+CIRCLE_AREA = int(CIRCLE_MASK.sum())
+MIN_ORANGE_PIXELS = int(round(CIRCLE_AREA * MIN_ORANGE_RATIO))
+
 
 # thực hiện click
 def adb_tap(x, y):
     subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=False)
+
 
 # chụp màn hình
 def capture_screen():
@@ -40,53 +56,84 @@ def capture_screen():
     if result.returncode != 0 or not result.stdout:
         return None
 
-    frame = cv2.imdecode(np.frombuffer(result.stdout, np.uint8), cv2.IMREAD_COLOR)
-    if frame is None:
-        return None
+    return cv2.imdecode(np.frombuffer(result.stdout, np.uint8), cv2.IMREAD_COLOR)
 
-    return frame
 
-# tìm nút Lưu bằng cách phân tích màu sắc trong khu vực mục tiêu
-def find_save_button(frame, target_x, target_y):
+# tạo mask cam cho cả frame (chỉ tính 1 lần mỗi frame)
+def build_orange_mask(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, LOWER_ORANGE, UPPER_ORANGE)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, MORPH_KERNEL, iterations=1)
-    mask = cv2.dilate(mask, MORPH_KERNEL, iterations=1)
+    return hsv, mask
 
+
+# đếm pixel cam + lấy HSV đại diện trong hình tròn r=TARGET_REGION_RADIUS quanh target
+def probe_target(hsv, mask, target_x, target_y):
     height, width = mask.shape[:2]
-    x1 = max(0, target_x - TARGET_REGION_RADIUS)
-    x2 = min(width, target_x + TARGET_REGION_RADIUS)
-    y1 = max(0, target_y - TARGET_REGION_RADIUS)
-    y2 = min(height, target_y + TARGET_REGION_RADIUS)
+    r = TARGET_REGION_RADIUS
 
-    region_mask = mask[y1:y2, x1:x2]
-    orange_pixels = int(np.count_nonzero(region_mask))
+    x1, x2 = max(0, target_x - r), min(width, target_x + r + 1)
+    y1, y2 = max(0, target_y - r), min(height, target_y + r + 1)
+    if x1 >= x2 or y1 >= y2:
+        return 0, [0, 0, 0]
 
-    cy_idx = min(target_y, height - 1)
-    cx_idx = min(target_x, width - 1)
-    actual_hsv = hsv[cy_idx, cx_idx].tolist()
+    # cắt CIRCLE_MASK theo đúng phần đã bị clip ở biên màn hình
+    circle = CIRCLE_MASK[
+        y1 - (target_y - r) : y2 - (target_y - r),
+        x1 - (target_x - r) : x2 - (target_x - r),
+    ]
+    orange_pixels = int(np.count_nonzero((mask[y1:y2, x1:x2] > 0) & circle))
 
-    if orange_pixels < MIN_ORANGE_PIXELS_IN_REGION:
-        return None, orange_pixels, actual_hsv
+    # HSV trung vị của cả vùng tròn: đại diện hơn 1 pixel tâm (dễ dính
+    # tap-indicator của thiết bị hoặc pixel nhiễu)
+    median_hsv = np.median(hsv[y1:y2, x1:x2][circle], axis=0).astype(int).tolist()
+    return orange_pixels, median_hsv
 
-    # tính centroid của các pixel cam trong vùng
-    ys, xs = np.where(region_mask > 0)
-    centroid_x = int(xs.mean()) + x1
-    centroid_y = int(ys.mean()) + y1
-    dist = np.hypot(centroid_x - target_x, centroid_y - target_y)
 
-    if dist <= MAX_CENTROID_DISTANCE:
-        return (target_x, target_y), orange_pixels, actual_hsv
-    else:
-        print(f"  Reject ({target_x},{target_y}): centroid cam tại ({centroid_x},{centroid_y}), cách target {dist:.1f}px > {MAX_CENTROID_DISTANCE}px")
-        return None, orange_pixels, actual_hsv
+# vẽ ảnh debug: vòng định vị to cho dễ tìm + vòng r=5 đúng vùng check thật
+def draw_debug(frame, results, clicked):
+    overlay = frame.copy()
+    r = TARGET_REGION_RADIUS
+
+    for (tx, ty, pixels) in results:
+        hit = (tx, ty) == clicked
+        color = (0, 255, 255) if hit else (160, 160, 160)
+
+        if hit:
+            # vòng định vị lớn + 4 gạch chỉ vào tâm (chừa trống để không che vùng check)
+            cv2.circle(overlay, (tx, ty), 40, color, 2)
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                cv2.line(overlay, (tx + dx * 38, ty + dy * 38),
+                         (tx + dx * 14, ty + dy * 14), color, 2)
+
+        # vùng check thật: hình tròn r=5, vẽ to gấp 4 lần ở khung phóng to bên cạnh
+        cv2.circle(overlay, (tx, ty), r, (0, 255, 0) if hit else color, 1)
+        cv2.putText(overlay, f"{pixels}/{CIRCLE_AREA}", (tx + 48, ty + 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+
+    # khung phóng to 8x quanh điểm được click, dán vào góc trên trái
+    if clicked is not None:
+        cx, cy = clicked
+        pad = 14
+        y1, y2 = max(0, cy - pad), min(frame.shape[0], cy + pad + 1)
+        x1, x2 = max(0, cx - pad), min(frame.shape[1], cx + pad + 1)
+        zoom = cv2.resize(frame[y1:y2, x1:x2], None, fx=8, fy=8,
+                          interpolation=cv2.INTER_NEAREST)
+        cv2.circle(zoom, ((cx - x1) * 8 + 4, (cy - y1) * 8 + 4), r * 8, (0, 255, 0), 2)
+        cv2.rectangle(zoom, (0, 0), (zoom.shape[1] - 1, zoom.shape[0] - 1), (0, 255, 255), 2)
+        overlay[20:20 + zoom.shape[0], 20:20 + zoom.shape[1]] = zoom
+
+    return overlay
 
 
 def main():
     last_click_at = 0.0
-    frame_count = 0
 
-    print(f"[START] Auto-click đang chạy | Targets: {CLICK_TARGETS} | Delay: {CAPTURE_DELAY_SEC}s")
+    print(
+        f"[START] Auto-click đang chạy | Targets: {CLICK_TARGETS} | "
+        f"Vùng check: hình tròn r={TARGET_REGION_RADIUS}px ({CIRCLE_AREA}px) | "
+        f"Ngưỡng: >={MIN_ORANGE_PIXELS}px | Delay: {CAPTURE_DELAY_SEC}s"
+    )
 
     while True:
         frame = capture_screen()
@@ -95,39 +142,39 @@ def main():
             time.sleep(CAPTURE_DELAY_SEC)
             continue
 
-        frame_count += 1
-        # print(f"[Frame {frame_count}] Đang quét {len(CLICK_TARGETS)} vị trí...")
-        print(f".")
+        print(".", flush=True)
 
-        found_center = None
-        found_pixels = 0
-        found_hsv = None
+        hsv, mask = build_orange_mask(frame)
+
+        found = None
+        results = []
         for tx, ty in CLICK_TARGETS:
-            center, orange_pixels, actual_hsv = find_save_button(frame, tx, ty)
+            orange_pixels, median_hsv = probe_target(hsv, mask, tx, ty)
+            results.append((tx, ty, orange_pixels))
             if orange_pixels > 0:
-                print(f"  ({tx},{ty})| Orange pixels: {orange_pixels}| HSV: {actual_hsv}")
-            if center is not None:
-                found_center = center
-                found_pixels = orange_pixels
-                found_hsv = actual_hsv
+                print(f"  ({tx},{ty})| Orange pixels: {orange_pixels}/{CIRCLE_AREA}| HSV~ {median_hsv}")
+            if orange_pixels >= MIN_ORANGE_PIXELS:
+                found = (tx, ty, orange_pixels, median_hsv)
                 break
 
-        if found_center is not None:
-            cx, cy = found_center
+        if found is not None:
+            cx, cy, found_pixels, found_hsv = found
             now = time.time()
             if now - last_click_at >= CLICK_COOLDOWN_SEC:
-                print(f"Click nút Lưu tại: ({cx}, {cy}) | Orange pixels: {found_pixels} | HSV: {found_hsv}")
-                adb_tap(cx, cy)
-                last_click_at = now
-                delay = CLICK_COOLDOWN_SEC
-                print(f"Đã click, chờ {delay} giây trước khi tiếp tục...")
-                time.sleep(delay)
+                print(
+                    f"Click nút Lưu tại: ({cx}, {cy}) | "
+                    f"Orange pixels: {found_pixels}/{CIRCLE_AREA} | HSV~ {found_hsv}"
+                )
 
                 if SAVE_DEBUG_IMAGE:
-                    overlay = frame.copy()
-                    cv2.circle(overlay, (cx, cy), 18, (0, 255, 255), 3)
-                    cv2.imwrite(DEBUG_IMAGE_PATH, overlay)
-                    print(f"Đã lưu ảnh kiểm tra tại: {DEBUG_IMAGE_PATH}")
+                    # lưu ảnh gốc TRƯỚC khi vẽ: chú thích vẽ đè lên vùng check
+                    # sẽ làm sai lệch nếu sau này dùng ảnh đó để dò ngưỡng màu
+                    cv2.imwrite(RAW_IMAGE_PATH, frame)
+                    cv2.imwrite(DEBUG_IMAGE_PATH, draw_debug(frame, results, (cx, cy)))
+                    print(f"Đã lưu ảnh kiểm tra: {DEBUG_IMAGE_PATH} (gốc: {RAW_IMAGE_PATH})")
+
+                adb_tap(cx, cy)
+                last_click_at = now
 
         time.sleep(CAPTURE_DELAY_SEC)
 
