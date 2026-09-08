@@ -1,25 +1,37 @@
+import os
 import subprocess
+import threading
 import time
-
+from datetime import datetime
 import cv2
 import numpy as np
 
 
+# Mỗi thiết bị ADB (serial, lấy bằng lệnh `adb devices`) có bộ điểm click riêng.
+DEVICE_TARGETS = {
+    "5aa8d79d": [
+        (915, 460),
+        (915, 510),
+        (915, 610),
+        (915, 635),
+        (915, 666),
+        (915, 735),
+    ],
+    # "e1fc4dcc": [
+    #     (915, 480),
+    #     (915, 610),
+    #     (915, 635),
+    # ],
+}
+
 CAPTURE_DELAY_SEC = 5
 CLICK_COOLDOWN_SEC = 5
+# Timeout cho mỗi lệnh adb: tránh treo vô hạn nếu thiết bị mất kết nối/lag,
+# việc này khiến Ctrl+C không phản hồi khi chạy nhiều giờ.
+ADB_TIMEOUT_SEC = 10
 SAVE_DEBUG_IMAGE = True
-DEBUG_IMAGE_PATH = "last_click.png"      # ảnh có vẽ chú thích, để xem bằng mắt
-RAW_IMAGE_PATH = "last_capture_raw.png"  # ảnh gốc chưa vẽ gì, để dò lại ngưỡng màu
-
-CLICK_TARGETS = [
-    (915, 460),
-    (915, 510),
-    (915, 610),
-    (915, 635),
-    (915, 666),
-    (915, 735),
-    (915, 860),
-]
+DEBUG_IMAGE_PATH = "last_click_{device}.png"      # ảnh có vẽ chú thích, để xem bằng mắt
+RAW_IMAGE_PATH = "last_capture_raw_{device}.png"  # ảnh gốc chưa vẽ gì, để dò lại ngưỡng màu
 
 # Vùng kiểm tra là HÌNH TRÒN bán kính 5px, tâm đúng tại điểm click.
 TARGET_REGION_RADIUS = 5
@@ -42,18 +54,31 @@ CIRCLE_AREA = int(CIRCLE_MASK.sum())
 MIN_ORANGE_PIXELS = int(round(CIRCLE_AREA * MIN_ORANGE_RATIO))
 
 
-# thực hiện click
-def adb_tap(x, y):
-    subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=False)
+# thực hiện click trên thiết bị chỉ định (serial)
+def adb_tap(device_id, x, y):
+    try:
+        subprocess.run(
+            ["adb", "-s", device_id, "shell", "input", "tap", str(x), str(y)],
+            check=False,
+            timeout=ADB_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[WARN][{device_id}] Lệnh tap quá {ADB_TIMEOUT_SEC}s, bỏ qua lần này.")
 
 
-# chụp màn hình
-def capture_screen():
-    result = subprocess.run(
-        ["adb", "exec-out", "screencap", "-p"],
-        check=False,
-        capture_output=True,
-    )
+# chụp màn hình của thiết bị chỉ định (serial)
+def capture_screen(device_id):
+    try:
+        result = subprocess.run(
+            ["adb", "-s", device_id, "exec-out", "screencap", "-p"],
+            check=False,
+            capture_output=True,
+            timeout=ADB_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[WARN][{device_id}] Lệnh screencap quá {ADB_TIMEOUT_SEC}s, bỏ qua lần này.")
+        return None
+
     if result.returncode != 0 or not result.stdout:
         return None
 
@@ -127,33 +152,27 @@ def draw_debug(frame, results, clicked):
     return overlay
 
 
-def main():
+def run_for_device(device_id, click_targets, stop_event):
     last_click_at = 0.0
+    debug_image_path = DEBUG_IMAGE_PATH.format(device=device_id)
+    raw_image_path = RAW_IMAGE_PATH.format(device=device_id)
 
-    print(
-        f"[START] Auto-click đang chạy | Targets: {CLICK_TARGETS} | "
-        f"Vùng check: hình tròn r={TARGET_REGION_RADIUS}px ({CIRCLE_AREA}px) | "
-        f"Ngưỡng: >={MIN_ORANGE_PIXELS}px | Delay: {CAPTURE_DELAY_SEC}s"
-    )
+    print(f"[START] Auto-click start | device={device_id} | targets={click_targets}")
 
-    while True:
-        frame = capture_screen()
+    while not stop_event.is_set():
+        frame = capture_screen(device_id)
         if frame is None:
-            print("[WARN] Không chụp được màn hình (ADB lỗi?), thử lại sau...")
-            time.sleep(CAPTURE_DELAY_SEC)
+            print(f"[WARN][{device_id}] Không chụp được màn hình (ADB lỗi?), thử lại sau...")
+            stop_event.wait(CAPTURE_DELAY_SEC)
             continue
-
-        print(".", flush=True)
 
         hsv, mask = build_orange_mask(frame)
 
         found = None
         results = []
-        for tx, ty in CLICK_TARGETS:
+        for tx, ty in click_targets:
             orange_pixels, median_hsv = probe_target(hsv, mask, tx, ty)
             results.append((tx, ty, orange_pixels))
-            if orange_pixels > 0:
-                print(f"  ({tx},{ty})| Orange pixels: {orange_pixels}/{CIRCLE_AREA}| HSV~ {median_hsv}")
             if orange_pixels >= MIN_ORANGE_PIXELS:
                 found = (tx, ty, orange_pixels, median_hsv)
                 break
@@ -163,21 +182,54 @@ def main():
             now = time.time()
             if now - last_click_at >= CLICK_COOLDOWN_SEC:
                 print(
-                    f"Click nút Lưu tại: ({cx}, {cy}) | "
+                    f"[{device_id}] Click nút Lưu tại: ({cx}, {cy}) | "
                     f"Orange pixels: {found_pixels}/{CIRCLE_AREA} | HSV~ {found_hsv}"
                 )
 
                 if SAVE_DEBUG_IMAGE:
                     # lưu ảnh gốc TRƯỚC khi vẽ: chú thích vẽ đè lên vùng check
                     # sẽ làm sai lệch nếu sau này dùng ảnh đó để dò ngưỡng màu
-                    cv2.imwrite(RAW_IMAGE_PATH, frame)
-                    cv2.imwrite(DEBUG_IMAGE_PATH, draw_debug(frame, results, (cx, cy)))
-                    print(f"Đã lưu ảnh kiểm tra: {DEBUG_IMAGE_PATH} (gốc: {RAW_IMAGE_PATH})")
+                    cv2.imwrite(raw_image_path, frame)
+                    cv2.imwrite(debug_image_path, draw_debug(frame, results, (cx, cy)))
+                    print(f"[{device_id}] ====> Hoàn thành lúc {datetime.now().strftime('%H:%M:%S')}")
 
-                adb_tap(cx, cy)
+                adb_tap(device_id, cx, cy)
                 last_click_at = now
 
-        time.sleep(CAPTURE_DELAY_SEC)
+        stop_event.wait(CAPTURE_DELAY_SEC)
+
+    print(f"[STOP] Đã dừng | device={device_id}")
+
+
+def main():
+    if not DEVICE_TARGETS:
+        print("[ERROR] DEVICE_TARGETS trống, không có thiết bị nào để chạy.")
+        return
+
+    stop_event = threading.Event()
+    threads = [
+        threading.Thread(target=run_for_device, args=(device_id, targets, stop_event), daemon=True)
+        for device_id, targets in DEVICE_TARGETS.items()
+    ]
+    for t in threads:
+        t.start()
+
+    try:
+        # join có timeout để main thread luôn tỉnh dậy và bắt được Ctrl+C,
+        # thay vì bị chặn vô hạn trong join() không tham số.
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(timeout=0.5)
+    except KeyboardInterrupt:
+        print("\n[STOP] Nhận Ctrl+C, đang dừng các thiết bị...")
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=ADB_TIMEOUT_SEC + 2)
+        # Nếu có thread vẫn kẹt trong 1 lệnh adb quá thời gian timeout,
+        # ép thoát process luôn để terminal không bị treo.
+        if any(t.is_alive() for t in threads):
+            print("[STOP] Một số thread chưa thoát kịp, ép dừng process.")
+            os._exit(1)
 
 
 if __name__ == "__main__":
