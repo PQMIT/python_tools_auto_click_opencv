@@ -6,10 +6,12 @@ from datetime import datetime
 import cv2
 import numpy as np
 
+# command open link shope: 
+# adb shell am start -a android.intent.action.VIEW -d "https://vn.shp.ee/b3g639AP" com.shopee.vn
 
 # Mỗi thiết bị ADB (serial, lấy bằng lệnh `adb devices`) có bộ điểm click riêng.
 DEVICE_TARGETS = {
-    "5aa8d79d": [
+    "adb-5aa8d79d-266Dgg._adb-tls-connect._tcp": [
         (915, 460),
         (915, 510),
         (915, 610),
@@ -30,8 +32,8 @@ CLICK_COOLDOWN_SEC = 5
 # việc này khiến Ctrl+C không phản hồi khi chạy nhiều giờ.
 ADB_TIMEOUT_SEC = 10
 SAVE_DEBUG_IMAGE = True
-DEBUG_IMAGE_PATH = "last_click_{device}.png"      # ảnh có vẽ chú thích, để xem bằng mắt
-RAW_IMAGE_PATH = "last_capture_raw_{device}.png"  # ảnh gốc chưa vẽ gì, để dò lại ngưỡng màu
+DEBUG_IMAGE_PATH = "./image/last_click_{device}.png"      # ảnh có vẽ chú thích, để xem bằng mắt
+RAW_IMAGE_PATH = "./image/last_capture_raw_{device}.png"  # ảnh gốc chưa vẽ gì, để dò lại ngưỡng màu
 
 # Vùng kiểm tra là HÌNH TRÒN bán kính 5px, tâm đúng tại điểm click.
 TARGET_REGION_RADIUS = 5
