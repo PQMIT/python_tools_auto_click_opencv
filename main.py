@@ -117,7 +117,8 @@ def print_counts():
 
 # lưu ảnh vào thư mục theo tháng/thiết bị, tên có timestamp + toạ độ
 def save_click_images(device_id, frame, annotated, cx, cy, now):
-    folder = os.path.join(IMAGE_ROOT, month_key(now), device_id)
+    # ":" (vd 192.168.1.5:5555) không hợp lệ trong tên thư mục trên Windows
+    folder = os.path.join(IMAGE_ROOT, month_key(now), device_id.replace(":", "_"))
     os.makedirs(folder, exist_ok=True)
     base = os.path.join(folder, f"{now.strftime('%Y%m%d_%H%M%S')}_x{cx}y{cy}")
     # ảnh gốc lưu riêng, vì chú thích vẽ đè lên vùng check sẽ làm sai lệch khi dò ngưỡng màu
