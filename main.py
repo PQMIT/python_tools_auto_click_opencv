@@ -13,7 +13,7 @@ import numpy as np
 
 # Mỗi thiết bị ADB (serial, lấy bằng lệnh `adb devices`) có bộ điểm click riêng.
 DEVICE_TARGETS = {
-    "192.168.19.46:5555": [
+    "5aa8d79d": [
         (915, 460),
         (915, 510),
         (915, 610),
